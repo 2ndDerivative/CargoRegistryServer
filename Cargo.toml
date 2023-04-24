@@ -1,0 +1,15 @@
+[package]
+name = "cargo_registry_server"
+version = "1.3.1"
+edition = "2021"
+authors = ["Niclas Klugmann <niclas@klugmann.de>"]
+description = "Webserver for serving a cargo registry for internal networks"
+keywords = ["webserver", "cargo", "registry", "crates"]
+
+[dependencies]
+once_cell = "1.17.1"
+serde = {version = "1.0.160", features = ["derive"]}
+serde_json = "1.0.96"
+sha256 = "1.1.2"
+toml = "0.7.3"
+walkdir = "2.3.2"
