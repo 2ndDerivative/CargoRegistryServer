@@ -22,6 +22,7 @@ mod dependency;
 mod git;
 mod config;
 mod error;
+mod owners;
 
 fn main() -> IoResult<()> {
     println!("Starting up!");
@@ -83,12 +84,17 @@ fn handle_request(request: Request, mut stream: TcpStream) -> IoResult<()> {
     match request {
         Request{method: RequestMethod::Get, path, ..} if path.strip_prefix('/').unwrap_or(&path).starts_with(&CONFIG.download.path) 
             && path.ends_with("download") => download::handle_download_request(stream, &path),
+
         Request{method: RequestMethod::Put, path, ..} if path == API_NEW => publish::handle_publish_request(stream),
+
         Request{method: RequestMethod::Put, path, ..} if path.starts_with(API_COMMON) && path.ends_with("/unyank") => yank::unyank(stream, &path),
         Request{method: RequestMethod::Delete, path, ..} if path.starts_with(API_COMMON) && path.ends_with("/yank") => yank::yank(stream, &path),
+
+        Request{method: RequestMethod::Get, path, ..} if path.starts_with(API_COMMON) && path.ends_with("/owners") => owners::list(stream, &path),
+        Request{method: RequestMethod::Put, path, headers} if path.starts_with(API_COMMON) && path.ends_with("/owners") => owners::add(stream, &path, headers),
+        Request{method: RequestMethod::Delete, path, headers} if path.starts_with(API_COMMON) && path.ends_with("/owners") => owners::remove(stream, &path, headers),
+
         Request{method: RequestMethod::Get, path, ..} if path.starts_with(API_COMMON) => search::handle_search_request(stream, path.strip_prefix(API_COMMON).expect("if let guard unstable")),
-        Request{method: RequestMethod::Get | RequestMethod::Put | RequestMethod::Delete, path, ..} 
-            if path.starts_with(API_COMMON) && path.ends_with("owners") => stream.write_all(&Response::new(501).into_bytes()),
         _ => stream.write_all(&Response::new(405).into_bytes())
     }
 }
