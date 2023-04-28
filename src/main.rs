@@ -1,5 +1,5 @@
 use std::{
-    net::{TcpListener, TcpStream}, 
+    net::{TcpListener, TcpStream, SocketAddr}, 
     io::{BufReader, BufRead, Write, Result as IoResult}, 
     fs::{create_dir_all, File, OpenOptions},
 };
@@ -7,7 +7,7 @@ use std::{
 use threads::ThreadPool;
 
 use http::{Request, Response};
-use config::CONFIG;
+use config::{CONFIG, IndexConfigFile};
 
 use crate::{http::{RequestMethod, Byteable}, error::ErrorJson};
 
@@ -26,6 +26,7 @@ mod error;
 fn main() -> IoResult<()> {
     println!("Starting up!");
     let index_path = &CONFIG.index.path;
+    let socket_addr = SocketAddr::new(CONFIG.net.ip, CONFIG.net.port);
     if index_path.exists() {
         println!("Using existing index at {}", index_path.display());
     } else {
@@ -37,15 +38,15 @@ fn main() -> IoResult<()> {
         let index_config_path = index_path.join("config.json");
         File::create(&index_config_path)?;
         let mut index_config = OpenOptions::new().write(true).open(&index_config_path)?;
-        index_config.write_all(
-            format!("{{\r\n\"dl\": \"http://{0}/{1}\",\r\n\"api\": \"http://{0}\"\r\n}}", CONFIG.net.ip, CONFIG.download.path).as_bytes()
-        )?;
+        let cfg: IndexConfigFile = CONFIG.clone().try_into().expect("bad configured URL");
+        index_config.write_all(serde_json::to_string_pretty(&cfg)?.as_bytes())?;
         drop(index_config);
         git::init_index()?;
         git::add_and_commit_to_index(&index_config_path, "Init index")?;
     }
-    let listener = TcpListener::bind(CONFIG.net.ip)?;
-    println!("Binding to {}", CONFIG.net.ip);
+
+    let listener = TcpListener::bind(socket_addr)?;
+    println!("Binding to {}", socket_addr);
     let pool = ThreadPool::new(CONFIG.net.threads.unwrap_or(10));
 
     for stream in listener.incoming() {
