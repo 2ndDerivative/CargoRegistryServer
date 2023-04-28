@@ -3,7 +3,7 @@ use std::{io::{Result as IoResult, Error as IoError, ErrorKind, Write}, net::Tcp
 use serde::Serialize;
 use walkdir::WalkDir;
 
-use crate::{CONFIG, http::{Response, Byteable}, index_crate::IndexCrate};
+use crate::{CONFIG, http::{Response, Byteable}, index_crate::IndexCrate, error::ErrorJson};
 
 use self::error::SearchResultError;
 
@@ -14,7 +14,7 @@ type CrateVersions = Vec<IndexCrate>;
 pub fn handle_search_request(mut stream: TcpStream, path: &str) -> IoResult<()> {
     let query = match path.parse::<Query>() {
         Ok(query) => query,
-        _ => return stream.write_all(&Response::new(400).into_bytes())
+        Err(e) => return stream.write_all(&Response::new(400).body(ErrorJson::new(&[e])).into_bytes())
     };
 
     let crate_files = WalkDir::new(&CONFIG.index.path).into_iter().flatten().filter(|p| 

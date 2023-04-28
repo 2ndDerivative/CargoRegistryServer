@@ -9,7 +9,7 @@ use threads::ThreadPool;
 use http::{Request, Response};
 use config::CONFIG;
 
-use crate::http::{RequestMethod, Byteable};
+use crate::{http::{RequestMethod, Byteable}, error::ErrorJson};
 
 mod threads;
 mod http;
@@ -21,6 +21,7 @@ mod index_crate;
 mod dependency;
 mod git;
 mod config;
+mod error;
 
 fn main() -> IoResult<()> {
     println!("Starting up!");
@@ -65,15 +66,17 @@ fn handle_connection(mut stream: TcpStream) -> IoResult<()> {
         .collect::<Vec<_>>()
         .join("\r\n");
     println!("Connection with request:\n{request}");
-    if let Ok(request) = request.parse() {
-        handle_request(request, stream)
-    } else {
-        stream.write_all(&Response::new(400).into_bytes())
+    match request.parse() {
+        Ok(request) => handle_request(request, stream),
+        Err(e) => {
+            println!("Request not recognized!");
+            stream.write_all(&Response::new(400).body(ErrorJson::new(&[e])).into_bytes())
+        }
     }
 }
 
-const API_COMMON: &str = "/api/v1/crates";
-const API_NEW: &str = "/api/v1/crates/new";
+pub const API_COMMON: &str = "/api/v1/crates";
+pub const API_NEW: &str = "/api/v1/crates/new";
 
 fn handle_request(request: Request, mut stream: TcpStream) -> IoResult<()> {
     match request {
@@ -86,25 +89,5 @@ fn handle_request(request: Request, mut stream: TcpStream) -> IoResult<()> {
         Request{method: RequestMethod::Get | RequestMethod::Put | RequestMethod::Delete, path, ..} 
             if path.starts_with(API_COMMON) && path.ends_with("owners") => stream.write_all(&Response::new(501).into_bytes()),
         _ => stream.write_all(&Response::new(405).into_bytes())
-    }
-}
-
-fn error_json(errors: &[&str]) -> Vec<u8> {
-    format!("{{\"errors\":[{}]}}", 
-        errors.iter().map(|err|
-            format!("{{\"detail\":\"{err}\"}}")
-        ).collect::<Vec<_>>().join(",")).into_bytes()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::error_json;
-    #[test]
-    fn error_json_two_args() {
-        let words = ["haha", "hehe"];
-        let json = error_json(&words);
-        assert_eq!(json,
-            r#"{"errors":[{"detail":"haha"},{"detail":"hehe"}]}"#.as_bytes()
-        );
     }
 }

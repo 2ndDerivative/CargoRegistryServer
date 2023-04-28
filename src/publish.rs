@@ -10,7 +10,7 @@ use crate::{
     dependency::Dependency, 
     git::add_and_commit_to_index, 
     http::{Response, Byteable}, 
-    error_json, 
+    error::ErrorJson, 
     config::CONFIG,
 };
 use walkdir::WalkDir;
@@ -32,7 +32,7 @@ pub(crate) fn handle_publish_request(mut stream: TcpStream) -> IoResult<()> {
                 BadHTTPJson(_) | NonNumericContentLength(_) | InvalidUTF8Error(_) => 400,
                 PayloadTooLarge => 413,
             };
-            let response = Response::new(code).body(error_json(&[&format!("{e}")]));
+            let response = Response::new(code).body(ErrorJson::new(&[e]));
             return stream.write_all(&response.into_bytes())
         }
     };
@@ -46,11 +46,10 @@ pub(crate) fn handle_publish_request(mut stream: TcpStream) -> IoResult<()> {
         Err(pub_err) => {
             use PublishError::*;
             let code = match pub_err {
-                IoError(e) => return Err(e),
                 VersionAlreadyExists | CrateExistsWithDifferentDashUnderscore => 403,
-                BadIndexJson | SerializationFailed(_) => 500,
+                IoError(_) | BadIndexJson | SerializationFailed(_) => 500,
             };
-            let response = Response::new(code).body(error_json(&[&format!("{pub_err}")]));
+            let response = Response::new(code).body(ErrorJson::new(&[pub_err]));
             stream.write_all(&response.into_bytes())
         }
     }

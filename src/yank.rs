@@ -3,7 +3,7 @@ use std::io::{Write, Result as IoResult};
 
 mod error;
 
-use crate::{index_crate::IndexCrate, http::{Response, Byteable}, error_json};
+use crate::{index_crate::IndexCrate, http::{Response, Byteable}, error::ErrorJson};
 use crate::git::add_and_commit_to_index;
 
 use self::error::YankPathError;
@@ -19,7 +19,7 @@ pub(crate) fn yank(stream: TcpStream, path: &str) -> IoResult<()> {
 fn replace_yanked_field(mut stream: TcpStream, path: &Path, yanked: bool) -> IoResult<()> {
     let (version, name) = match parse_yank_path(path) {
         Err(e) => {
-            let body = error_json(&[&e.to_string()]);
+            let body = ErrorJson::from(vec![e]);
             return stream.write_all(&Response::new(400).body(body).into_bytes())
         },
         Ok(t) => t,
