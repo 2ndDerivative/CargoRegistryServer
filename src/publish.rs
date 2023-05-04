@@ -6,14 +6,13 @@ use std::{
     fs::{OpenOptions, File},
 };
 use crate::{
-    index_crate::IndexCrate, 
+    index::{IndexCrate, self}, 
     dependency::Dependency, 
-    git::add_and_commit_to_index, 
-    http::{Response, Byteable}, 
-    error::ErrorJson, 
-    config::CONFIG,
+    git::add_and_commit_to_index,  
+    error::ReturnJson as ErrorJson, 
+    config::CONFIG, database,
+    http::{Response, Byteable},
 };
-use walkdir::WalkDir;
 use serde::{Deserialize, Serialize, de::Error};
 
 use self::error::{PublishError, ReadStreamError};
@@ -21,12 +20,14 @@ use self::error::{PublishError, ReadStreamError};
 pub mod error;
 type PublishResult<T> = core::result::Result<T, PublishError>;
 
-pub(crate) fn handle_publish_request(mut stream: TcpStream) -> IoResult<()> {
-    println!("Publish request recognized!");
-    let (index_crate, raw_crate_file) = match get_crate_and_raw_bytes_from_stream(&mut stream) {
+pub(crate) fn handle_publish_request(mut stream: TcpStream, auth: &str) -> IoResult<()> {
+    let (published_crate, raw_crate_file) = match get_crate_and_raw_bytes_from_stream(&mut stream) {
         Ok(t) => t,
         Err(e) => {
-            use ReadStreamError::*;
+            use ReadStreamError::{
+                BadHTTPJson, ConnectionClosed, 
+                InvalidUTF8Error, NonNumericContentLength, PayloadTooLarge
+            };
             let code = match e {
                 ConnectionClosed(e) => return Err(e),
                 BadHTTPJson(_) | NonNumericContentLength(_) | InvalidUTF8Error(_) => 400,
@@ -36,15 +37,19 @@ pub(crate) fn handle_publish_request(mut stream: TcpStream) -> IoResult<()> {
             return stream.write_all(&response.into_bytes())
         }
     };
+    println!("PUBLISH {} v{} [{auth}]", published_crate.name, published_crate.vers);
     
-    match process_publish_request(&index_crate, &raw_crate_file) {
+    match process_publish_request(&published_crate, &raw_crate_file) {
         Ok(_) => {
             let warnings_json = serde_json::to_string(
                 &ReturnJson::new()).expect("This is a static json object");
             Ok(stream.write_all(&Response::new(200).body(warnings_json).into_bytes())?)
         },
         Err(pub_err) => {
-            use PublishError::*;
+            use PublishError::{
+                BadIndexJson, CrateExistsWithDifferentDashUnderscore, 
+                IoError, SerializationFailed, VersionAlreadyExists
+            };
             let code = match pub_err {
                 VersionAlreadyExists | CrateExistsWithDifferentDashUnderscore => 403,
                 IoError(_) | BadIndexJson | SerializationFailed(_) => 500,
@@ -55,40 +60,33 @@ pub(crate) fn handle_publish_request(mut stream: TcpStream) -> IoResult<()> {
     }
 }
 
-fn process_publish_request(index_crate: &IndexCrate, raw_file_bytes: &[u8]) -> PublishResult<()> {
+fn process_publish_request(package: &PublishedPackage, raw_file_bytes: &[u8]) -> PublishResult<()> {
+    let index_crate = IndexCrate::new(package.clone(), raw_file_bytes);
     // Check for existing version
-    let index_file_path = index_crate.path();
-    for any_crate_file in WalkDir::new(&CONFIG.index.path).into_iter().flatten().filter(|p| 
-        p.path().is_file() 
-        && !p.path().starts_with(CONFIG.index.path.join(".git")) 
-        && p.path() != CONFIG.index.path.join("config.json")){
-            if let Some(file_name) = any_crate_file.file_name().to_str() {
-                if file_name.replace('-', "_") == index_crate.name.replace('-', "_") {
-                    if file_name != index_crate.name {
-                        return Err(PublishError::CrateExistsWithDifferentDashUnderscore)
-                    } else {
-                        let index_file_read = std::fs::read_to_string(any_crate_file.path())?;
-                        for n in index_file_read.lines() {
-                            let line_crate: IndexCrate = serde_json::from_str(n).map_err(|_| PublishError::BadIndexJson)?;
-                            if line_crate.vers == index_crate.vers {
-                                return Err(PublishError::VersionAlreadyExists)
-                            } 
-                        }
-                    }
-                }
+    let index_file_path_absolute = &CONFIG.index.path.join(index_crate.path_in_index());
+    for index_crate_res in index::walk_index_crates() {
+        let index_crate_in_file = index_crate_res?;
+        if index_crate_in_file.name.replace('-', "_") == index_crate.name.replace('-', "_") {
+            if index_crate_in_file.name != index_crate.name {
+                return Err(PublishError::CrateExistsWithDifferentDashUnderscore)
+            } else if index_crate_in_file.vers == index_crate.vers {
+                return Err(PublishError::VersionAlreadyExists)
             }
+        }
+    }
 
-        };
+    database::add_package(package).unwrap();
 
-    if !index_file_path.exists() {
-        if let Some(parent) = index_file_path.parent() {
+    if !index_file_path_absolute.exists() {
+        if let Some(parent) = index_file_path_absolute.parent() {
             std::fs::create_dir_all(parent)?;
         }
     }
+    
     let mut index_file = OpenOptions::new()
         .append(true)
         .create(true)
-        .open(&index_file_path)?;
+        .open(index_file_path_absolute)?;
 
     write!(index_file, "{}\r\n", serde_json::to_string(&index_crate)?)?;
     drop(index_file);
@@ -98,12 +96,12 @@ fn process_publish_request(index_crate: &IndexCrate, raw_file_bytes: &[u8]) -> P
     if let Some(parent) = crate_file_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    write_file(crate_file_path, raw_file_bytes)?;
+    write_file(&crate_file_path, raw_file_bytes)?;
 
-    Ok(add_and_commit_to_index(&index_file_path, &format!("Add package [{}] version [{}] to index", index_crate.name, index_crate.vers))?)
+    Ok(add_and_commit_to_index(&index_crate.path_in_index(), &format!("Add package [{}] version [{}] to index", index_crate.name, index_crate.vers))?)
 }
 
-fn get_crate_and_raw_bytes_from_stream(stream: &mut TcpStream) -> Result<(IndexCrate, Vec<u8>), ReadStreamError> {
+fn get_crate_and_raw_bytes_from_stream(stream: &mut TcpStream) -> Result<(PublishedPackage, Vec<u8>), ReadStreamError> {
     fn read_number(stream: &mut TcpStream) -> IoResult<[u8; 4]> {
         let mut buf = [0; 4];
         stream.read_exact(&mut buf)?;
@@ -120,20 +118,19 @@ fn get_crate_and_raw_bytes_from_stream(stream: &mut TcpStream) -> Result<(IndexC
     let mut raw_crate_file = vec![0; u32::from_le_bytes(read_number(stream)?).try_into()?];
     stream.read_exact(&mut raw_crate_file)?;
 
-    let index_crate = IndexCrate::new(parsed_json, &raw_crate_file);
-    Ok((index_crate, raw_crate_file))
+    Ok((parsed_json, raw_crate_file))
 }
 
-fn write_file(path: PathBuf, raw_bytes: &[u8]) -> PublishResult<()> {
-    let mut target_file = File::create(&path)?;
+fn write_file(path: &PathBuf, raw_bytes: &[u8]) -> PublishResult<()> {
+    let mut target_file = File::create(path)?;
     target_file.write_all(raw_bytes)?;
     println!("Wrote file to {}", path.display());
     Ok(())
 }
 
-#[derive(Deserialize, Debug)]
-#[allow(dead_code)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(remote = "Self")]
+/// "name" is already normalized, so you can insert it into the database or use it for search terms
 pub(crate) struct PublishedPackage {
     pub(crate) name: String,
     pub(crate) vers: String,

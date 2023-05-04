@@ -1,9 +1,13 @@
 use std::{io::{Result as IoResult, Error as IoError, ErrorKind, Write}, net::TcpStream, str::FromStr};
 
 use serde::Serialize;
-use walkdir::WalkDir;
 
-use crate::{CONFIG, http::{Response, Byteable}, index_crate::IndexCrate, error::ErrorJson};
+use crate::{
+    index::{IndexCrate, self}, 
+    error::ReturnJson,
+    database,
+    http::{Response, Byteable}
+};
 
 use self::error::SearchResultError;
 
@@ -14,30 +18,28 @@ type CrateVersions = Vec<IndexCrate>;
 pub fn handle_search_request(mut stream: TcpStream, path: &str) -> IoResult<()> {
     let query = match path.parse::<Query>() {
         Ok(query) => query,
-        Err(e) => return stream.write_all(&Response::new(400).body(ErrorJson::new(&[e])).into_bytes())
+        Err(e) => return stream.write_all(&Response::new(400).body(ReturnJson::new(&[e])).into_bytes())
     };
 
-    let crate_files = WalkDir::new(&CONFIG.index.path).into_iter().flatten().filter(|p| 
-        p.path().is_file() 
-        && !p.path().starts_with(CONFIG.index.path.join(".git")) 
-        && p.path() != CONFIG.index.path.join("config.json")
-    );
-
-    // Check ob alle Dateien gelesen werden konnten
-    // Check if all Files could be read to strings
-    let crates_file_strings = crate_files.map(|file| {
-            std::fs::read_to_string(file.path())
-        }).collect::<Result<Vec<String>,_>>()?;
-
-    // Check ob alle gelesenen Strings geparsed werden konnten
-    // Check if all read strings could be parsed
-    let crate_versions = crates_file_strings
-        .into_iter()
-        .map(|filestring| {
-            filestring.lines()
-                .map(serde_json::from_str::<IndexCrate>)
-                .collect()
-        }).collect::<Result<Vec<CrateVersions>, _>>()?;
+    let crates = index::walk_index_crates();
+    let crate_versions: Vec<CrateVersions> = crates.fold(Ok(vec![]), |vec: Result<Vec<Vec<IndexCrate>>, IoError>, new_crate| {
+        let (mut vector, new_crate) = match (vec, new_crate) {
+            (Ok(x), Ok(y)) => (x, y),
+            (v, _)  => return v
+        };
+        let Some(last_crate_name) = vector.last()
+            .and_then(|v| v.first())
+            .map(|i| i.name.clone()) else {
+            return Ok(vec![vec![new_crate]]);
+        };
+        if last_crate_name == new_crate.name {
+            vector.last_mut().expect("should be initialized non-empty").push(new_crate);
+            Ok(vector)
+        } else {
+            vector.push(vec![new_crate]);
+            Ok(vector)
+        }
+    })?;
 
     // Alle übrigen Gruppen zu Suchergebnissen umwandeln
     // TryFrom handlet auch Crates die nur Yanked versionen haben
@@ -57,7 +59,11 @@ pub fn handle_search_request(mut stream: TcpStream, path: &str) -> IoResult<()> 
         .collect::<Result<Vec<SearchResult>,_>>()?;
 
     let results_matching_query = crate_groups.into_iter()
-        .filter(|i: &SearchResult| i.name.contains(&query.query_string.replace('-',"_").to_ascii_lowercase()))
+        .filter(|i: &SearchResult| {
+            let desc = database::get_description(&i.name, &i.max_version).unwrap().map(|x| x.to_ascii_lowercase());
+            i.name.contains(&query.query_string.replace('-',"_").to_ascii_lowercase())
+            || (desc.is_some() && desc.unwrap().contains(&query.query_string.to_ascii_lowercase()))
+        })
         .collect::<Vec<_>>();
 
     let crates: Vec<_> = results_matching_query.into_iter().take(query.per_page.min(100)).collect();
@@ -80,9 +86,8 @@ impl FromStr for Query {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut split = s.split('&');
-        let (query_side, per_page_side) = match (split.next(), split.next()) {
-            (Some(a), Some(b)) => (a, b),
-            _ => return Err("No two query elements found")
+        let (Some(query_side), Some(per_page_side)) = (split.next(), split.next()) else {
+            return Err("No two query elements found")
         };
         let query_string = match query_side.strip_prefix("?q=") {
             Some(q) => q.to_string(),
@@ -133,7 +138,7 @@ impl TryFrom<Vec<IndexCrate>> for SearchResult {
             .map(|x| {
                 let mut splittage = x.vers.split('.')
                     .take(3)
-                    .map(|s| s.parse::<u32>())
+                    .map(str::parse)
                 .collect::<Result<Vec<_>,_>>()?
                 .into_iter();
                 Ok((
@@ -147,6 +152,7 @@ impl TryFrom<Vec<IndexCrate>> for SearchResult {
             .max()
             .map(|(a, b, c)| format!("{a}.{b}.{c}"))
             .ok_or(SearchResultError::EmptyVector)?;
-        Ok(SearchResult { name, max_version, description: String::new() })
+        let description = database::get_description(&name, &max_version).unwrap().unwrap_or_default();
+        Ok(SearchResult { name, max_version, description })
     }
 }

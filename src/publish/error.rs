@@ -5,6 +5,8 @@ use std::{error::Error,
 };
 use serde_json::error::Error as SerdeJsonError;
 
+use crate::index::error::WalkIndexError;
+
 #[derive(Debug)]
 pub(crate) enum PublishError{
     IoError(IoError),
@@ -13,7 +15,17 @@ pub(crate) enum PublishError{
     SerializationFailed(SerdeJsonError),
     CrateExistsWithDifferentDashUnderscore,
 }
-impl Error for PublishError {}
+
+impl Error for PublishError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::IoError(i) => Some(i),
+            Self::SerializationFailed(i) => Some(i),
+            _ => None
+        }
+    }
+}
+
 impl Display for PublishError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "Failed to publish: {}", match self {
@@ -26,25 +38,24 @@ impl Display for PublishError {
     }
 }
 
+impl From<WalkIndexError> for PublishError {
+    fn from(value: WalkIndexError) -> Self {
+        match value {
+            WalkIndexError::IoError(i, _) => Self::IoError(i),
+            WalkIndexError::ParseJson(_, _, _) => Self::BadIndexJson
+        }
+    }
+}
 impl From<IoError> for PublishError {
     fn from(value: IoError) -> Self {
         Self::IoError(value)
     }
 }
-
 impl From<SerdeJsonError> for PublishError {
     fn from(value: SerdeJsonError) -> Self {
         Self::SerializationFailed(value)
     }
 }
-
-impl From<ParseIntError> for ReadStreamError {
-    fn from(value: ParseIntError) -> Self {
-        Self::NonNumericContentLength(value)
-    }
-}
-
-
 
 #[derive(Debug)]
 pub(crate) enum ReadStreamError {
@@ -54,7 +65,17 @@ pub(crate) enum ReadStreamError {
     InvalidUTF8Error(FromUtf8Error),
     PayloadTooLarge,
 }
-impl Error for ReadStreamError {}
+impl Error for ReadStreamError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ConnectionClosed(i) => Some(i),
+            Self::BadHTTPJson(i) => Some(i),
+            Self::NonNumericContentLength(i) => Some(i),
+            Self::InvalidUTF8Error(i) => Some(i),
+            Self::PayloadTooLarge => None
+        }
+    }
+}
 impl Display for ReadStreamError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "Failed to get package from stream: {}",
@@ -66,6 +87,12 @@ impl Display for ReadStreamError {
                 Self::PayloadTooLarge => format!("request body too large for server platform! Max: {}", usize::MAX),
             }
         )
+    }
+}
+
+impl From<ParseIntError> for ReadStreamError {
+    fn from(value: ParseIntError) -> Self {
+        Self::NonNumericContentLength(value)
     }
 }
 

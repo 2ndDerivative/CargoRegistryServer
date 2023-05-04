@@ -4,7 +4,7 @@ use std::fmt::{Display, Formatter, Result as FMTResult};
 use crate::config::CONFIG;
 
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub(crate) struct Dependency {
     pub(crate) name: String,
     pub(crate) version_req: String,
@@ -33,7 +33,7 @@ impl Default for Dependency {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum DependencyKind {
     Dev,
@@ -41,7 +41,7 @@ pub(crate) enum DependencyKind {
     Normal,
 }
 
-#[derive(Deserialize, Debug, Serialize)]
+#[derive(Deserialize, Debug, Serialize, Clone)]
 #[non_exhaustive]
 pub(crate) enum ValidRegistry {
     This,

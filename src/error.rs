@@ -1,11 +1,11 @@
 use serde::Serialize;
 
 #[derive(Serialize, PartialEq, Debug)]
-pub struct ErrorJson {
+pub struct ReturnJson {
     errors: Vec<DetailedErrorJson>
 }
 
-impl<D: std::fmt::Display> From<Vec<D>> for ErrorJson {
+impl<D: std::fmt::Display> From<Vec<D>> for ReturnJson {
     fn from(value: Vec<D>) -> Self {
         Self {
             errors: value
@@ -16,13 +16,13 @@ impl<D: std::fmt::Display> From<Vec<D>> for ErrorJson {
     }
 }
 
-impl From<ErrorJson> for Vec<u8> {
-    fn from(val: ErrorJson) -> Self {
+impl From<ReturnJson> for Vec<u8> {
+    fn from(val: ReturnJson) -> Self {
         serde_json::to_string(&val).unwrap().into_bytes()
     }
 }
 
-impl ErrorJson {
+impl ReturnJson {
     pub fn new<T: std::fmt::Display>(values: &[T]) -> Self {
         Self {
             errors: values
@@ -40,11 +40,11 @@ struct DetailedErrorJson {
 
 #[cfg(test)]
 mod tests {
-    use super::ErrorJson;
+    use super::ReturnJson;
     #[test]
     fn error_json_two_args() {
         let words = vec!["haha", "hehe"];
-        let json = ErrorJson::from(words);
+        let json = ReturnJson::from(words);
         assert_eq!(serde_json::to_string(&json).unwrap(),
             r#"{"errors":[{"detail":"haha"},{"detail":"hehe"}]}"#
         );

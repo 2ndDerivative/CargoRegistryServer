@@ -4,12 +4,16 @@ use std::{
     io::Error as IoError,
 };
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum YankError {
-    ConnectionClosed,
-    InvalidPath(YankPathError)
+    ConnectionClosed(IoError),
 }
 impl Error for YankError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ConnectionClosed(i) => Some(i)
+        }
+    }
 }
 impl Display for YankError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FMTResult {
@@ -17,33 +21,8 @@ impl Display for YankError {
     }
 }
 
-impl From<YankPathError> for YankError {
-    fn from(value: YankPathError) -> Self {
-        Self::InvalidPath(value)
-    }
-}
-
 impl From<IoError> for YankError {
-    fn from(_value: IoError) -> Self {
-        Self::ConnectionClosed
-    }
-}
-
-#[derive(Debug, PartialEq)]
-pub(crate) enum YankPathError {
-    NoVersion,
-    NoName,
-    DotDotInPath,
-    InvalidUTF8Error
-}
-impl Error for YankPathError {}
-impl Display for YankPathError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FMTResult {
-        match self {
-            Self::NoVersion => write!(f, "path contains no version"),
-            Self::NoName => write!(f, "path contains no crate name"),
-            Self::DotDotInPath => write!(f, r#"".." in path"#),
-            Self::InvalidUTF8Error => write!(f, "Invalid unicode in path"),
-        }
+    fn from(value: IoError) -> Self {
+        Self::ConnectionClosed(value)
     }
 }
